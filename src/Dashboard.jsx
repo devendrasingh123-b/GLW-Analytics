@@ -51,6 +51,20 @@ function parseDevice(ua) {
   return 'Desktop'
 }
 
+function parseBrowser(userAgent = '') {
+  if (!userAgent) return 'Unknown' 
+  const ua = userAgent.toLowerCase()
+
+
+  if (ua.includes('edg')) return 'Edge'
+  if (ua.includes('chrome')) return 'Chrome'
+  if (ua.includes('safari') && !ua.includes('chrome')) return 'Safari'
+  if (ua.includes('firefox')) return 'Firefox'
+  if (ua.includes('opr') || ua.includes('opera')) return 'Opera'
+
+  return 'Unknown'
+}
+
 function parseReferrer(ref) {
   if (!ref) return 'Direct'
   if (ref.includes('google')) return 'Google'
@@ -537,6 +551,209 @@ export default function Dashboard() {
           </ChartCard>
         </div>
 
+
+
+{/* ── SESSIONS TABLE ── */}
+<div style={{
+  background: C.white,
+  borderRadius: 14,
+  border: `1px solid ${C.border}`,
+  padding: '1.5rem 1.75rem',
+  boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+}}>
+
+  {/* Header */}
+  <div style={{
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '1.5rem'
+  }}>
+    <div>
+      <div style={{ fontWeight: 600, fontSize: '1rem', color: C.gray800 }}>
+        Recent Sessions
+      </div>
+      <div style={{ fontSize: '0.75rem', color: C.gray400, marginTop: 4 }}>
+        Click any row to view session detail
+      </div>
+    </div>
+
+    <span style={{
+      fontSize: 12,
+      background: C.indigoL,
+      color: C.indigo,
+      padding: '4px 12px',
+      borderRadius: 20,
+      fontWeight: 600,
+    }}>
+      {sessions.length} sessions
+    </span>
+  </div>
+
+  <div style={{ overflowX: 'auto' }}>
+    <table style={{
+      width: '100%',
+      borderCollapse: 'separate',
+      borderSpacing: '0 10px'   // 🔥 row gap
+    }}>
+
+      {/* Header */}
+      <thead>
+        <tr>
+          {[
+            'Time','Device','Browser','Source','Page',
+            'Duration','Scroll %','Clicks',
+            'Top Click 🔥','CTA 🔥','Engagement ⭐','Last Activity ⏱️'
+          ].map(h => (
+            <th key={h} style={{
+              color: C.gray400,
+              fontSize: '0.75rem',
+              textTransform: 'uppercase',
+              padding: '0.75rem 1rem',
+              textAlign: 'left',
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+            }}>
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+
+      <tbody>
+        {pageSessions.map((s, i) => {
+          const sm = summaryMap[s.id]
+          const clicks = clickMap[s.id] || []
+
+          const device = parseDevice(s.user_agent)
+          const browser = parseBrowser(s.user_agent)
+
+          const scrollPct = sm ? Math.round(Number(sm.max_scroll_depth) * 100) : null
+
+          const topClick = clicks.length
+            ? Object.entries(
+                clicks.reduce((acc, c) => {
+                  acc[c.target_text] = (acc[c.target_text] || 0) + 1
+                  return acc
+                }, {})
+              ).sort((a,b)=>b[1]-a[1])[0][0]
+            : null
+
+          const isCTA = topClick?.toLowerCase().includes('buy') ||
+                        topClick?.toLowerCase().includes('login')
+
+          const engagement = sm
+            ? Math.round((scrollPct || 0) + (sm.click_count * 10))
+            : null
+
+          const lastActivity = clicks.length
+            ? clicks[clicks.length - 1].occurred_at_ist
+            : null
+
+          return (
+            <tr key={s.id}
+             onClick={() => navigate(`/session/${s.id}`)}
+             style={{
+              background: '#fff',
+              borderRadius: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              transition: 'all 0.2s',
+              cursor: 'pointer'
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#fafafa'}
+            onMouseLeave={e => e.currentTarget.style.background = '#fff'}
+            >
+
+              {/* Time */}
+              <td style={{ padding: '1rem 1rem', fontSize: '0.85rem' }}>
+                {new Date(s.started_at_ist).toLocaleString()}
+              </td>
+
+              {/* Device */}
+              <td style={{ padding: '1rem 1rem', fontSize: '0.85rem' }}>
+                {device}
+              </td>
+
+              {/* Browser */}
+              <td style={{ padding: '1rem 1rem', fontSize: '0.85rem' }}>
+                {browser}
+              </td>
+
+              {/* Source */}
+              <td style={{ padding: '1rem 1rem' }}>
+                <span style={{
+                  fontSize: 12,
+                  padding: '4px 10px',
+                  borderRadius: 20,
+                  background: C.indigoL,
+                  color: C.indigo,
+                  fontWeight: 500
+                }}>
+                  {parseReferrer(s.referrer)}
+                </span>
+              </td>
+
+              {/* Page */}
+              <td style={{
+                padding: '1rem 1rem',
+                fontSize: '0.85rem',
+                maxWidth: 180,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis'
+              }}>
+                {s.path}
+              </td>
+
+              {/* Duration */}
+              <td style={{ padding: '1rem 1rem', fontWeight: 500 }}>
+                {sm ? `${Math.round(sm.time_on_page_ms/1000)}s` : '—'}
+              </td>
+
+              {/* Scroll */}
+              <td style={{ padding: '1rem 1rem' }}>
+                {sm ? `${scrollPct}%` : '—'}
+              </td>
+
+              {/* Clicks */}
+              <td style={{ padding: '1rem 1rem' }}>
+                {sm?.click_count ?? '—'}
+              </td>
+
+              {/* Top Click */}
+              <td style={{ padding: '1rem 1rem' }}>
+                {topClick || '—'}
+              </td>
+
+              {/* CTA */}
+              <td style={{ padding: '1rem 1rem' }}>
+                {isCTA ? '🟢 YES' : '—'}
+              </td>
+
+              {/* Engagement */}
+              <td style={{ padding: '1rem 1rem' }}>
+                {engagement
+                  ? engagement > 80 ? '🟢 High'
+                  : engagement > 40 ? '🟡 Mid'
+                  : '🔴 Low'
+                  : '—'}
+              </td>
+
+              {/* Last Activity */}
+              <td style={{ padding: '1rem 1rem', fontSize: '0.8rem' }}>
+                {lastActivity
+                  ? new Date(lastActivity).toLocaleTimeString()
+                  : '—'}
+              </td>
+
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
         {/* ── CHARTS ROW 2: Traffic sources + Top clicks ── */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
           <ChartCard title="Traffic Sources" sub="Where visitors are coming from">
@@ -591,143 +808,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ── SESSIONS TABLE ── */}
-        <div style={{
-          background: C.white, borderRadius: 12, border: `1px solid ${C.border}`,
-          padding: '1.25rem 1.5rem',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-        }}>
-          {/* Table header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.9rem', color: C.gray800 }}>Recent Sessions</div>
-              <div style={{ fontSize: '0.72rem', color: C.gray400, marginTop: 2 }}>Click any row to view session detail</div>
-            </div>
-            <span style={{
-              fontSize: 11, background: C.indigoL, color: C.indigo,
-              padding: '3px 10px', borderRadius: 20, fontWeight: 500,
-            }}>{sessions.length} sessions</span>
-          </div>
+      
 
-          {/* Table */}
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${C.gray100}` }}>
-                  {['Time', 'Device', 'Source', 'Referrer', 'Page', 'Duration', 'Scroll %', 'Clicks'].map(h => (
-                    <th key={h} style={{
-                      color: C.gray400, fontSize: '0.68rem', textTransform: 'uppercase',
-                      letterSpacing: '0.08em', padding: '0.5rem 0.75rem', textAlign: 'left',
-                      fontWeight: 600, fontFamily: 'DM Sans, sans-serif',
-                      whiteSpace: 'nowrap',
-                    }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {pageSessions.map((s, i) => {
-                  const sm = summaryMap[s.id]
-                  const device = parseDevice(s.user_agent)
-                  const deviceIcon = { Mobile: '📱', Desktop: '💻', Bot: '🤖', Tablet: '📟', Unknown: '❓' }[device] || '❓'
-                  const scrollPct = sm ? Math.round(Number(sm.max_scroll_depth) * 100) : null
-                  const scrollColor = scrollPct >= 75 ? C.emerald : scrollPct >= 40 ? C.amber : C.rose
 
-                  return (
-                    <tr
-                      key={s.id}
-                      onClick={() => navigate(`/session/${s.id}`)}
-                      style={{
-                        cursor: 'pointer',
-                        borderBottom: `1px solid ${C.gray100}`,
-                        transition: 'background 0.12s',
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = C.gray50}
-                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                    >
-                      {/* Time */}
-                      <td style={{ padding: '0.7rem 0.75rem', whiteSpace: 'nowrap' }}>
-                        <div style={{ fontSize: '0.78rem', color: C.gray700, fontWeight: 500 }}>
-                          {new Date(s.started_at_ist).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                        </div>
-                        <div style={{ fontSize: '0.68rem', color: C.gray400, fontFamily: 'DM Mono, monospace', marginTop: 1 }}>
-                          {new Date(s.started_at_ist).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </td>
-                      {/* Device */}
-                      <td style={{ padding: '0.7rem 0.75rem', fontSize: '0.78rem', color: C.gray700 }}>
-                        {deviceIcon} {device}
-                      </td>
-                      {/* Source */}
-                      <td style={{ padding: '0.7rem 0.75rem' }}>
-                        <span style={{
-                          fontSize: 11, padding: '2px 8px', borderRadius: 20,
-                          background: C.indigoL, color: C.indigo, fontWeight: 500,
-                        }}>{parseReferrer(s.referrer)}</span>
-                      </td>
-                      {/* Referrer URL */}
-                      <td style={{
-                        padding: '0.7rem 0.75rem', fontSize: '0.72rem', color: C.gray400,
-                        maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        fontFamily: 'DM Mono, monospace',
-                      }}>
-                        {s.referrer || '—'}
-                      </td>
-                      {/* Page */}
-                      <td style={{
-                        padding: '0.7rem 0.75rem', fontSize: '0.78rem', color: C.gray600,
-                        maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        fontFamily: 'DM Mono, monospace',
-                      }}>
-                        {s.path || '/'}
-                      </td>
-                      {/* Duration */}
-                      <td style={{ padding: '0.7rem 0.75rem', fontSize: '0.78rem', color: sm ? C.violet : C.gray300, fontWeight: sm ? 600 : 400 }}>
-                        {sm ? `${Math.round(Number(sm.time_on_page_ms) / 1000)}s` : '—'}
-                      </td>
-                      {/* Scroll bar */}
-                      <td style={{ padding: '0.7rem 0.75rem' }}>
-                        {sm ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <div style={{ width: 48, height: 4, background: C.gray100, borderRadius: 2, overflow: 'hidden' }}>
-                              <div style={{ width: `${scrollPct}%`, height: 4, background: scrollColor, borderRadius: 2 }} />
-                            </div>
-                            <span style={{ fontSize: '0.7rem', color: scrollColor, fontWeight: 600, minWidth: 28 }}>
-                              {scrollPct}%
-                            </span>
-                          </div>
-                        ) : '—'}
-                      </td>
-                      {/* Click count badge */}
-                      <td style={{ padding: '0.7rem 0.75rem' }}>
-                        {sm ? (
-                          <span style={{
-                            display: 'inline-block', minWidth: 24, textAlign: 'center',
-                            fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 20,
-                            background: Number(sm.click_count) > 0 ? C.amberL : C.gray100,
-                            color:      Number(sm.click_count) > 0 ? C.amber   : C.gray400,
-                          }}>{sm.click_count}</span>
-                        ) : '—'}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: '1rem' }}>
-              <button onClick={() => setPage(1)} disabled={page === 1} style={paginBtn(page === 1)}>«</button>
-              <button onClick={() => setPage(p => p - 1)} disabled={page === 1} style={paginBtn(page === 1)}>Prev</button>
-              <span style={{ fontSize: '0.8rem', color: C.gray500, padding: '0 8px', fontFamily: 'DM Mono, monospace' }}>
-                {page} / {totalPages}
-              </span>
-              <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages} style={paginBtn(page >= totalPages)}>Next</button>
-              <button onClick={() => setPage(totalPages)} disabled={page >= totalPages} style={paginBtn(page >= totalPages)}>»</button>
-            </div>
-          )}
-        </div>
 
       </div>{/* /page content */}
     </div>
