@@ -424,38 +424,7 @@ export default function Analytics() {
             </SectionHeading>
 
             {/* Top pages bar chart */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-              <Card>
-                <CardHeader title="Sessions per Page" sub="Top visited paths" />
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={pageStats.slice(0,10)} layout="vertical" barSize={14}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} horizontal={false} />
-                    <XAxis type="number" tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="page"
-                      tick={{ fill: C.gray600, fontSize: 11, fontFamily: 'DM Mono, monospace' }}
-                      axisLine={false} tickLine={false} width={110} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="sessions" name="Sessions" fill={C.indigo} radius={[0,5,5,0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-
-              <Card>
-                <CardHeader title="Avg. Duration per Page" sub="Seconds users spend (mean)" />
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={pageStats.slice(0,10)} layout="vertical" barSize={14}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} horizontal={false} />
-                    <XAxis type="number" tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="page"
-                      tick={{ fill: C.gray600, fontSize: 11, fontFamily: 'DM Mono, monospace' }}
-                      axisLine={false} tickLine={false} width={110} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="avgDuration" name="Avg Duration (s)" fill={C.violet} radius={[0,5,5,0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-            </div>
-
+           
             {/* Full page stats table */}
             <Card>
               <CardHeader title="All Pages — Full Breakdown" sub="Sorted by sessions" />
