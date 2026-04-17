@@ -1,29 +1,27 @@
 /**
- * Dashboard.jsx — GLW Analytics v3
- * Changes from v2:
- *  • Custom date range filter added
- *  • KPI: Bounce Rate removed, Engagement Rate removed, CTA Clicks removed
- *    → replaced with Unique Sessions (distinct session IDs)
- *  • Top Pages section removed
- *  • Top Clicked Elements: product clicks (Berry, Lemon etc) now shown as
- *    clickable product pills + CTA breakdown kept below
- *  • Engagement Level breakdown (High/Med/Low/None) moved to Dashboard
- *  • Sessions table: starts with Session ID, shows Engagement col,
- *    removes less-important cols
+ * Dashboard.jsx — GLW Analytics v4
+ * Changes from v3:
+ *  • Custom date range now filters entire dashboard correctly
+ *  • CTA panel: "BUY NOW" removed, only Platform names shown
+ *  • Gel Wink / long product text buttons removed from CTA
+ *  • Chart zoom-out issue fixed (pointer-events on YAxis labels)
+ *  • Sessions table: CTA column added with filter
+ *  • Hourly report / Peak hours section added
+ *  • More insights from analyticsUtils
  */
 
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, BarChart, Bar,
+  ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell,
 } from 'recharts'
 import { supabase } from './supabaseClient'
 import {
   C, GLOBAL_CSS, CHART_COLORS, CustomTooltip,
   parseDevice, parseDeviceIcon, parseReferrer,
   engagementLevel, engagementStyle,
-  filterByDays, buildClickStats,
+  filterByDays, buildClickStats, buildHourlyStats,
   generateInsights, isCTA,
   Card, CardHeader, KPICard, InsightPill,
   SkeletonCard, paginBtnStyle,
@@ -37,16 +35,8 @@ const DATE_FILTERS = [
   { label: 'Custom', value: -1 },
 ]
 
-
-
 const PLATFORM_LIST = [
-  'Amazon',
-  'Flipkart',
-  'Blinkit',
-  'Zepto',
-  'Instamart',
-  'Aromahpure',
-  'Vercel'
+  'Amazon', 'Flipkart', 'Blinkit', 'Zepto', 'Instamart', 'Aromahpure', 'Vercel'
 ]
 
 const SORT_OPTIONS = [
@@ -58,12 +48,19 @@ const SORT_OPTIONS = [
 ]
 const LIMIT = 15
 
-// ── product-name detection: if target_text is NOT a CTA, treat as product
 function isProduct(text) {
   if (!text) return false
   if (isCTA(text)) return false
-  // short non-CTA labels are likely product names
   return text.length < 40
+}
+
+// Extract platform name from CTA text
+function extractPlatform(text) {
+  if (!text) return null
+  const cleaned = text.replace(/buy now/gi, '').replace(/buy/gi, '').replace(/\s+/g, ' ').trim()
+  if (!cleaned || cleaned.length > 30) return null
+  const match = PLATFORM_LIST.find(p => cleaned.toLowerCase().includes(p.toLowerCase()))
+  return match || null
 }
 
 export default function Dashboard() {
@@ -82,6 +79,7 @@ export default function Dashboard() {
   const [customTo,     setCustomTo]     = useState('')
   const [deviceFilter, setDeviceFilter] = useState('All')
   const [searchQuery,  setSearchQuery]  = useState('')
+  const [ctaFilter,    setCtaFilter]    = useState('All')  // NEW: CTA filter for sessions table
   const [sortBy,       setSortBy]       = useState('time_desc')
   const [page,         setPage]         = useState(1)
 
@@ -110,16 +108,21 @@ export default function Dashboard() {
     return () => supabase.removeChannel(ch)
   }, [])
 
-  // ── Date filter logic (supports custom range)
+  // ── Date filter logic — FIX: properly applies custom range to ALL data
   const sessions = useMemo(() => {
     let s = allSessions
-    if (days === -1 && customFrom && customTo) {
-      const from = new Date(customFrom)
-      const to   = new Date(customTo); to.setHours(23, 59, 59)
-      s = s.filter(x => {
-        const d = new Date(x.started_at_ist)
-        return d >= from && d <= to
-      })
+    if (days === -1) {
+      // Custom date range — only apply if both dates are set
+      if (customFrom && customTo) {
+        const from = new Date(customFrom)
+        from.setHours(0, 0, 0, 0)
+        const to = new Date(customTo)
+        to.setHours(23, 59, 59, 999)
+        s = s.filter(x => {
+          const d = new Date(x.started_at_ist)
+          return d >= from && d <= to
+        })
+      }
     } else if (days > 0) {
       s = filterByDays(s, days)
     }
@@ -132,6 +135,7 @@ export default function Dashboard() {
   const summary = useMemo(() =>
     allSummary.filter(s => sessionIds.has(s.session_id)), [allSummary, sessionIds])
 
+  // FIX: clicks also filtered by sessionIds so all charts reflect the date range
   const clicks = useMemo(() =>
     allClicks.filter(c => sessionIds.has(c.session_id)), [allClicks, sessionIds])
 
@@ -141,16 +145,36 @@ export default function Dashboard() {
     return m
   }, [summary])
 
+  // Build a map: session_id → list of platform CTAs clicked
+  const sessionCtaMap = useMemo(() => {
+    const m = {}
+    clicks.forEach(c => {
+      if (!isCTA(c.target_text || '')) return
+      const platform = extractPlatform(c.target_text)
+      if (!platform) return
+      if (!m[c.session_id]) m[c.session_id] = new Set()
+      m[c.session_id].add(platform)
+    })
+    return m
+  }, [clicks])
+
+  // All platforms that appear in clicks (for CTA filter dropdown)
+  const allCtaPlatforms = useMemo(() => {
+    const s = new Set()
+    Object.values(sessionCtaMap).forEach(set => set.forEach(p => s.add(p)))
+    return ['All', 'None', ...Array.from(s).sort()]
+  }, [sessionCtaMap])
+
   // ── KPI calculations
   const totalSessions  = sessions.length
   const realSessions   = sessions.filter(s => parseDevice(s.user_agent) !== 'Bot').length
-  const uniqueSessions = new Set(sessions.map(s => s.id)).size   // unique session IDs
+  const uniqueSessions = new Set(sessions.map(s => s.id)).size
   const avgTime = summary.length
     ? Math.round(summary.reduce((a, b) => a + Number(b.time_on_page_ms), 0) / summary.length / 1000)
     : 0
   const totalClicks = summary.reduce((a, b) => a + Number(b.click_count), 0)
 
-  // ── Engagement level counts (for breakdown card)
+  // ── Engagement level counts
   const engCounts = useMemo(() => {
     const counts = { High: 0, Medium: 0, Low: 0, 'No data': 0 }
     sessions.forEach(s => {
@@ -179,22 +203,35 @@ export default function Dashboard() {
 
   const clickStats = useMemo(() => buildClickStats(clicks), [clicks])
 
-  // Separate product clicks vs CTA clicks
+  // Hourly data — uses date-filtered sessions & clicks
+  const hourlyData = useMemo(() => buildHourlyStats(sessions, clicks), [sessions, clicks])
+  const peakHour   = useMemo(() => {
+    const max = Math.max(...hourlyData.map(h => h.sessions))
+    return hourlyData.find(h => h.sessions === max)
+  }, [hourlyData])
+
   const productClicks = useMemo(() =>
     clickStats.byText.filter(x => isProduct(x.name)).slice(0, 10),
     [clickStats]
   )
-  const ctaClicks = useMemo(() =>
-    clickStats.byText.filter(x => isCTA(x.name)).slice(0, 8),
-    [clickStats]
-  )
+
+  // Cleaned platform CTAs — remove "BUY NOW", filter to known platforms, remove long garbage
+  const platformCTAClicks = useMemo(() => {
+    const m = {}
+    clickStats.ctaClicks.forEach(c => {
+      const platform = extractPlatform(c.target_text)
+      if (!platform) return
+      m[platform] = (m[platform] || 0) + 1
+    })
+    return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value)
+  }, [clickStats])
 
   const insights = useMemo(() =>
     generateInsights({ sessions, summaryMap, clicks, pageStats: [] }),
     [sessions, summaryMap, clicks]
   )
 
-  // ── Session table
+  // ── Session table with CTA filter
   const filteredSessions = useMemo(() => {
     let s = [...sessions]
     if (searchQuery.trim()) {
@@ -205,6 +242,14 @@ export default function Dashboard() {
         parseReferrer(x.referrer).toLowerCase().includes(q) ||
         parseDevice(x.user_agent).toLowerCase().includes(q)
       )
+    }
+    // CTA filter
+    if (ctaFilter !== 'All') {
+      if (ctaFilter === 'None') {
+        s = s.filter(x => !sessionCtaMap[x.id] || sessionCtaMap[x.id].size === 0)
+      } else {
+        s = s.filter(x => sessionCtaMap[x.id]?.has(ctaFilter))
+      }
     }
     s.sort((a, b) => {
       const sa = summaryMap[a.id], sb = summaryMap[b.id]
@@ -217,11 +262,11 @@ export default function Dashboard() {
       }
     })
     return s
-  }, [sessions, searchQuery, sortBy, summaryMap])
+  }, [sessions, searchQuery, sortBy, summaryMap, ctaFilter, sessionCtaMap])
 
   const totalPages   = Math.ceil(filteredSessions.length / LIMIT)
   const pageSessions = filteredSessions.slice((page - 1) * LIMIT, page * LIMIT)
-  useMemo(() => setPage(1), [searchQuery, sortBy, days, deviceFilter])
+  useMemo(() => setPage(1), [searchQuery, sortBy, days, deviceFilter, ctaFilter])
 
   // ─── Loading
   if (loading) return (
@@ -295,7 +340,13 @@ export default function Dashboard() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h1 style={{ fontSize: '1.1rem', fontWeight: 600, color: C.gray900, letterSpacing: '-0.02em' }}>Dashboard</h1>
-            <p style={{ fontSize: '0.75rem', color: C.gray400, marginTop: 1 }}>{totalSessions} sessions · {realSessions} real users</p>
+            <p style={{ fontSize: '0.75rem', color: C.gray400, marginTop: 1 }}>{totalSessions} sessions · {realSessions} real users
+              {days === -1 && customFrom && customTo && (
+                <span style={{ marginLeft: 6, color: C.indigo, fontWeight: 500 }}>
+                  ({customFrom} → {customTo})
+                </span>
+              )}
+            </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             {/* Device filter */}
@@ -313,7 +364,7 @@ export default function Dashboard() {
                 }}>{f.label}</button>
               ))}
             </div>
-            {/* Custom date inputs — shown only when Custom selected */}
+            {/* Custom date inputs */}
             {days === -1 && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} style={inputStyle} />
@@ -330,7 +381,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* KPI CARDS — 4 cards: Sessions, Avg Time, Total Clicks, Unique Sessions */}
+        {/* KPI CARDS */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
           <KPICard icon="👥" label="Sessions"        value={totalSessions}  sub={`${realSessions} real`}      color={C.indigo}  bgColor={C.indigoL}  />
           <KPICard icon="⏱️" label="Avg Time"        value={`${avgTime}s`}  sub="per session"                 color={C.violet}  bgColor={C.violetL}  />
@@ -340,7 +391,6 @@ export default function Dashboard() {
 
         {/* ROW 1: Daily trend + Engagement Breakdown */}
         <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-          {/* Daily visitors chart */}
           <Card>
             <CardHeader title="Sessions Over Time" sub="Daily visitor trend" badge={days === -1 ? 'Custom' : `${days || 'All'} days`} />
             <ResponsiveContainer width="100%" height={190}>
@@ -356,12 +406,11 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Card>
 
-          {/* Engagement Level Breakdown */}
           <Card>
             <CardHeader title="Engagement Levels" sub="Breakdown by session engagement" badge="Live" />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
               {[
-                { level: 'High',    color: C.emerald, bg: C.emeraldL, desc: 'scroll>50% & 20s+' },
+                { level: 'High',    color: C.emerald, bg: C.emeraldL, desc: 'scroll>70% & 30s+' },
                 { level: 'Medium',  color: C.amber,   bg: C.amberL,   desc: 'some interaction' },
                 { level: 'Low',     color: C.rose,    bg: C.roseL,    desc: 'minimal interaction' },
                 { level: 'No data', color: C.gray400, bg: C.gray100,  desc: 'no summary recorded' },
@@ -387,213 +436,176 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* ROW 2: Click data — Products + CTAs */}
-        {/* ROW 2: Click data — Products + CTAs */}
+        {/* ROW 2: Platform CTAs + Traffic Sources */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
 
+          <Card>
+            <CardHeader
+              title="Top Clicked Elements"
+              sub="Platform & product insights"
+              action={<Link to="/analytics" style={{ fontSize: 11, color: C.indigo, textDecoration: 'none' }}>Full click report →</Link>}
+            />
 
-<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+            {productClicks.length === 0 && platformCTAClicks.length === 0 ? (
+              <div style={{ color: C.gray300, fontSize: '0.82rem', textAlign: 'center', padding: '1.5rem' }}>
+                No click data yet
+              </div>
+            ) : (
+              <>
+                {/* Product pills */}
+                {productClicks.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: C.gray400, marginBottom: 8, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Product Interest
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {productClicks.map(item => (
+                        <div key={item.name} style={{
+                          padding: '5px 12px', borderRadius: 20,
+                          border: `1px solid ${C.indigoM}`, background: C.indigoL,
+                          color: C.indigo, fontSize: 12, fontWeight: 500,
+                          display: 'flex', alignItems: 'center', gap: 5,
+                        }}>
+                          {item.name}
+                          <span style={{ background: C.indigo + '22', borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
+                            {item.value}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-  {/* Product Interest — clickable pills */}
- 
- {/* Product + Platform Cleaned */}
-  <Card>
-    <CardHeader
-      title="Top Clicked Elements"
-      sub="Clean platform & product insights"
-      action={<Link to="/analytics" style={{ fontSize: 11, color: C.indigo, textDecoration: 'none' }}>Full click report →</Link>}
-    />
+                {/* Platform bars — FIX: no "BUY NOW", no Gel Wink garbage */}
+                {platformCTAClicks.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: C.gray400, marginBottom: 8, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Platforms
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                      {platformCTAClicks.map((item) => (
+                        <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 10, background: C.emerald, color: C.white, padding: '2px 8px', borderRadius: 4, fontWeight: 600, minWidth: 72, textAlign: 'center' }}>
+                            {item.name}
+                          </span>
+                          <div style={{ flex: 1, position: 'relative', height: 20 }}>
+                            <div style={{
+                              position: 'absolute', left: 0, top: 2,
+                              width: `${Math.round(item.value / (platformCTAClicks[0]?.value || 1) * 100)}%`,
+                              height: 16, borderRadius: 4, background: C.emeraldL,
+                            }} />
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: C.emerald, width: 24, textAlign: 'right' }}>
+                            {item.value}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
 
-    {productClicks.length === 0 && ctaClicks.length === 0 ? (
-      <div style={{ color: C.gray300, fontSize: '0.82rem', textAlign: 'center', padding: '1.5rem' }}>
-        No click data yet
-      </div>
-    ) : (
-      <>
-        {/* ================= PRODUCT PILLS ================= */}
-        {productClicks.length > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <div style={{
-              fontSize: 11,
-              color: C.gray400,
-              marginBottom: 8,
-              fontWeight: 500,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em'
-            }}>
-              Product Interest
-            </div>
+          <Card>
+            <CardHeader
+              title="Traffic Sources"
+              sub="Where visitors come from"
+              action={<Link to="/analytics" style={{ fontSize: 11, color: C.indigo, textDecoration: 'none' }}>Full report →</Link>}
+            />
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={trafficData} layout="vertical" barSize={12}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} horizontal={false} />
+                <XAxis type="number" tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={{ fill: C.gray600, fontSize: 11 }} axisLine={false} tickLine={false} width={60} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="value" name="Sessions" fill={C.violet} radius={[0,5,5,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </div>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {productClicks.map(item => (
-                <button
-                  key={item.name}
-                  onClick={() => navigate(`/analytics?product=${item.name}`)}
-                  style={{
-                    padding: '5px 12px',
-                    borderRadius: 20,
-                    border: `1px solid ${C.indigoM}`,
-                    background: C.indigoL,
-                    color: C.indigo,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                  }}
-                >
-                  {item.name}
-                  <span style={{
-                    background: C.indigo + '22',
-                    borderRadius: 10,
-                    padding: '1px 6px',
-                    fontSize: 10,
-                    fontWeight: 700
-                  }}>
-                    {item.value}
-                  </span>
-                </button>
+        {/* ── HOURLY REPORT — Peak Hours */}
+        <Card style={{ marginBottom: '1rem' }}>
+          <CardHeader
+            title="⏰ Hourly Traffic Report"
+            sub="Sessions and clicks by hour of day — all times in IST"
+            badge={peakHour ? `Peak: ${peakHour.label}` : undefined}
+            badgeColor={C.amber} badgeBg={C.amberL}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '1.5rem', alignItems: 'start' }}>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={hourlyData} barSize={14} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: C.gray400, fontSize: 9, fontFamily: 'DM Mono, monospace' }}
+                  axisLine={false} tickLine={false}
+                  interval={1}
+                />
+                <YAxis tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} width={24} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="sessions" name="Sessions" radius={[3,3,0,0]}>
+                  {hourlyData.map((entry, i) => (
+                    <Cell key={i}
+                      fill={entry.hour === peakHour?.hour ? C.amber : C.indigo + 'BB'}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+
+            {/* Peak hours summary panel */}
+            <div style={{ minWidth: 160, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {/* Top 3 peak hours */}
+              {[...hourlyData].sort((a,b) => b.sessions - a.sessions).slice(0, 5).map((h, i) => (
+                <div key={h.hour} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: i === 0 ? C.amberL : C.gray50,
+                  border: `1px solid ${i === 0 ? C.amber + '44' : C.border}`,
+                  borderRadius: 8, padding: '6px 10px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, color: i === 0 ? C.amber : C.gray400, fontWeight: 600 }}>#{i+1}</span>
+                    <span style={{ fontSize: 12, fontFamily: 'DM Mono, monospace', color: C.gray700, fontWeight: 500 }}>{h.label}</span>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: i === 0 ? C.amber : C.gray600 }}>{h.sessions}</span>
+                </div>
               ))}
+              <div style={{ fontSize: 10, color: C.gray400, marginTop: 2, textAlign: 'center' }}>sessions per hour</div>
             </div>
           </div>
-        )}
 
-        {/* ================= PLATFORM (CTA FIXED) ================= */}
-        {(() => {
-
-          const cleanCTAClicks = {}
-
-          ctaClicks.forEach(item => {
-            let name = item.name
-            if (!name) return
-
-            // 🔥 remove BUY text
-            name = name
-              .replace(/buy now/gi, '')
-              .replace(/buy/gi, '')
-              .replace(/\s+/g, ' ')
-              .trim()
-
-            if (!name) return
-
-            // ❌ remove long product garbage
-            if (name.length > 30) return
-
-            // ✅ only allow PLATFORM LIST
-            const isPlatform = PLATFORM_LIST.some(p =>
-              name.toLowerCase().includes(p.toLowerCase())
-            )
-
-            if (!isPlatform) return
-
-            // capitalize
-            name = name.charAt(0).toUpperCase() + name.slice(1)
-
-            cleanCTAClicks[name] = (cleanCTAClicks[name] || 0) + item.value
-          })
-
-          const finalCTAClicks = Object.entries(cleanCTAClicks)
-            .map(([name, value]) => ({ name, value }))
-            .sort((a, b) => b.value - a.value)
-
-          if (finalCTAClicks.length === 0) return null
-
-          return (
-            <div>
-              <div style={{
-                fontSize: 11,
-                color: C.gray400,
-                marginBottom: 8,
-                fontWeight: 500,
-                textTransform: 'uppercase',
-                letterSpacing: '0.06em'
-              }}>
-                Platforms
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {finalCTAClicks.map((item, i) => (
-                  <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-
-                    {/* PLATFORM LABEL */}
-                    <span style={{
-                      fontSize: 10,
-                      background: C.emerald,
-                      color: C.white,
-                      padding: '2px 6px',
-                      borderRadius: 4,
-                      fontWeight: 600
-                    }}>
-                      {item.name}
-                    </span>
-
-                    {/* BAR */}
-                    <div style={{ flex: 1, position: 'relative', height: 20 }}>
-                      <div style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 2,
-                        width: `${Math.round(item.value / (finalCTAClicks[0]?.value || 1) * 100)}%`,
-                        height: 16,
-                        borderRadius: 4,
-                        background: C.emeraldL,
-                      }} />
-
-                      <span style={{
-                        position: 'absolute',
-                        left: 6,
-                        top: 2,
-                        fontSize: 11,
-                        color: C.gray700,
-                        lineHeight: '16px'
-                      }}>
-                        {item.name}
-                      </span>
-                    </div>
-
-                    {/* VALUE */}
-                    <span style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: C.emerald,
-                      width: 24,
-                      textAlign: 'right'
-                    }}>
-                      {item.value}
-                    </span>
+          {/* Day part summary */}
+          {(() => {
+            const morning   = hourlyData.slice(5, 12).reduce((a,b) => a + b.sessions, 0)
+            const afternoon = hourlyData.slice(12, 17).reduce((a,b) => a + b.sessions, 0)
+            const evening   = hourlyData.slice(17, 21).reduce((a,b) => a + b.sessions, 0)
+            const night     = hourlyData.slice(21, 24).reduce((a,b) => a + b.sessions, 0) + hourlyData.slice(0, 5).reduce((a,b) => a + b.sessions, 0)
+            const parts = [
+              { label: '🌅 Morning',   sub: '5am–12pm', value: morning,   color: C.amber   },
+              { label: '☀️ Afternoon', sub: '12pm–5pm', value: afternoon, color: C.orange  },
+              { label: '🌆 Evening',   sub: '5pm–9pm',  value: evening,   color: C.indigo  },
+              { label: '🌙 Night',     sub: '9pm–5am',  value: night,     color: C.violet  },
+            ]
+            const maxPart = Math.max(...parts.map(p => p.value))
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: '1rem', paddingTop: '0.875rem', borderTop: `1px solid ${C.gray100}` }}>
+                {parts.map(p => (
+                  <div key={p.label} style={{
+                    background: p.value === maxPart ? p.color + '14' : C.gray50,
+                    border: `1px solid ${p.value === maxPart ? p.color + '33' : C.border}`,
+                    borderRadius: 10, padding: '0.75rem', textAlign: 'center',
+                  }}>
+                    <div style={{ fontSize: 11, color: C.gray600, fontWeight: 500, marginBottom: 4 }}>{p.label}</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 700, color: p.value === maxPart ? p.color : C.gray700 }}>{p.value}</div>
+                    <div style={{ fontSize: 9, color: C.gray400, marginTop: 2 }}>{p.sub}</div>
                   </div>
                 ))}
               </div>
-            </div>
-          )
-        })()}
-
-      </>
-    )}
-  </Card>
-
-
-
-  {/* Traffic Sources */}
-  <Card>
-    <CardHeader
-      title="Traffic Sources"
-      sub="Where visitors come from"
-      action={<Link to="/analytics" style={{ fontSize: 11, color: C.indigo, textDecoration: 'none' }}>Full report →</Link>}
-    />
-
-    <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={trafficData} layout="vertical" barSize={12}>
-        <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} horizontal={false} />
-        <XAxis type="number" tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} />
-        <YAxis type="category" dataKey="name" tick={{ fill: C.gray600, fontSize: 11 }} axisLine={false} tickLine={false} width={60} />
-        <Tooltip content={<CustomTooltip />} />
-        <Bar dataKey="value" name="Sessions" fill={C.violet} radius={[0,5,5,0]} />
-      </BarChart>
-    </ResponsiveContainer>
-  </Card>
-
-</div>
+            )
+          })()}
+        </Card>
 
         {/* INSIGHTS PANEL */}
         <Card style={{ marginBottom: '1rem' }}>
@@ -621,6 +633,10 @@ export default function Dashboard() {
                   placeholder="Search ID, page, source…"
                   style={{ ...inputStyle, paddingLeft: 28, width: 200 }} />
               </div>
+              {/* CTA / Platform filter */}
+              <select value={ctaFilter} onChange={e => setCtaFilter(e.target.value)} style={selectStyle}>
+                {allCtaPlatforms.map(p => <option key={p}>{p}</option>)}
+              </select>
               <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={selectStyle}>
                 {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -634,7 +650,7 @@ export default function Dashboard() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.gray100}` }}>
-                  {['Session ID', 'Started', 'Device', 'Source', 'Clicks', 'Left At', 'Engagement'].map(h => (
+                  {['Session ID', 'Started', 'Device', 'Source', 'Clicks', 'Left At', 'CTA', 'Engagement'].map(h => (
                     <th key={h} style={{
                       color: C.gray400, fontSize: '0.66rem', textTransform: 'uppercase',
                       letterSpacing: '0.08em', padding: '0.45rem 0.7rem', textAlign: 'left',
@@ -645,13 +661,14 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {pageSessions.map(s => {
-                  const sm    = summaryMap[s.id]
+                  const sm     = summaryMap[s.id]
                   const device = parseDevice(s.user_agent)
-                  const eng   = engagementLevel(sm)
-                  const engSt = engagementStyle(eng)
+                  const eng    = engagementLevel(sm)
+                  const engSt  = engagementStyle(eng)
                   const leftAt = sm?.ended_at_ist
                     ? new Date(sm.ended_at_ist).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
                     : null
+                  const ctaPlatforms = sessionCtaMap[s.id] ? Array.from(sessionCtaMap[s.id]) : []
 
                   return (
                     <tr key={s.id} onClick={() => navigate(`/session/${s.id}`)}
@@ -659,13 +676,11 @@ export default function Dashboard() {
                       onMouseEnter={e => e.currentTarget.style.background = C.gray50}
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
-                      {/* Session ID — short */}
                       <td style={tdStyle}>
                         <span style={{ fontSize: '0.72rem', color: C.indigo, fontFamily: 'DM Mono, monospace', background: C.indigoL, padding: '2px 7px', borderRadius: 5 }}>
                           {s.id.slice(0, 8)}…
                         </span>
                       </td>
-                      {/* Started */}
                       <td style={tdStyle}>
                         <div style={{ fontSize: '0.76rem', color: C.gray700, fontWeight: 500 }}>
                           {new Date(s.started_at_ist).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
@@ -674,17 +689,14 @@ export default function Dashboard() {
                           {new Date(s.started_at_ist).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                         </div>
                       </td>
-                      {/* Device */}
                       <td style={tdStyle}>
                         <span style={{ fontSize: '0.76rem', color: C.gray700 }}>{parseDeviceIcon(device)} {device}</span>
                       </td>
-                      {/* Source */}
                       <td style={tdStyle}>
                         <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, background: C.indigoL, color: C.indigo, fontWeight: 500 }}>
                           {parseReferrer(s.referrer)}
                         </span>
                       </td>
-                      {/* Clicks */}
                       <td style={tdStyle}>
                         {sm ? (
                           <span style={{
@@ -694,13 +706,26 @@ export default function Dashboard() {
                           }}>{sm.click_count}</span>
                         ) : <span style={{ color: C.gray300, fontSize: '0.76rem' }}>—</span>}
                       </td>
-                      {/* Left At */}
                       <td style={tdStyle}>
                         <span style={{ fontSize: '0.72rem', color: leftAt ? C.gray600 : C.gray300, fontFamily: leftAt ? 'DM Mono, monospace' : 'inherit' }}>
                           {leftAt || '—'}
                         </span>
                       </td>
-                      {/* Engagement */}
+                      {/* CTA column — shows platform badges */}
+                      <td style={tdStyle}>
+                        {ctaPlatforms.length > 0 ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                            {ctaPlatforms.map(p => (
+                              <span key={p} style={{
+                                fontSize: 9, padding: '2px 6px', borderRadius: 4,
+                                background: C.emeraldL, color: C.emerald, fontWeight: 600,
+                              }}>{p}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ color: C.gray300, fontSize: '0.72rem' }}>—</span>
+                        )}
+                      </td>
                       <td style={tdStyle}>
                         <span style={{
                           fontSize: 10, padding: '2px 7px', borderRadius: 20, fontWeight: 500,
@@ -711,7 +736,7 @@ export default function Dashboard() {
                   )
                 })}
                 {pageSessions.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: C.gray300, fontSize: '0.85rem' }}>No sessions match your filters</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: 'center', padding: '2.5rem', color: C.gray300, fontSize: '0.85rem' }}>No sessions match your filters</td></tr>
                 )}
               </tbody>
             </table>

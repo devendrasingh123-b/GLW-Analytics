@@ -234,6 +234,31 @@ export function buildClickStats(clicks) {
 }
 
 /**
+ * Build hourly traffic distribution
+ * Returns [{hour, label, sessions, clicks}] for 0-23
+ */
+export function buildHourlyStats(sessions, clicks) {
+  const hourSessions = Array(24).fill(0)
+  const hourClicks   = Array(24).fill(0)
+
+  sessions.forEach(s => {
+    const h = new Date(s.started_at_ist).getHours()
+    if (h >= 0 && h < 24) hourSessions[h]++
+  })
+  clicks.forEach(c => {
+    const h = new Date(c.occurred_at_ist).getHours()
+    if (h >= 0 && h < 24) hourClicks[h]++
+  })
+
+  return Array.from({ length: 24 }, (_, h) => ({
+    hour: h,
+    label: h === 0 ? '12am' : h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`,
+    sessions: hourSessions[h],
+    clicks: hourClicks[h],
+  }))
+}
+
+/**
  * Generate automatic marketing insights
  * Returns [{type, text, severity}]
  */
@@ -243,15 +268,19 @@ export function generateInsights({ sessions, summaryMap, clicks, pageStats }) {
   if (!total) return [{ type: 'info', text: 'Not enough data yet. Insights will appear once sessions are recorded.' }]
 
   // Device mix
-  const mobileCount = sessions.filter(s => parseDevice(s.user_agent) === 'Mobile').length
-  const mobilePct   = Math.round(mobileCount / total * 100)
+  const mobileCount  = sessions.filter(s => parseDevice(s.user_agent) === 'Mobile').length
+  const desktopCount = sessions.filter(s => parseDevice(s.user_agent) === 'Desktop').length
+  const mobilePct    = Math.round(mobileCount / total * 100)
   if (mobilePct >= 55)
     ins.push({ type: 'info', icon: '📱',
       text: `${mobilePct}% of traffic is mobile. Ensure your primary CTAs are above the fold and easy to tap.` })
+  else if (desktopCount > mobileCount && mobilePct > 0)
+    ins.push({ type: 'info', icon: '💻',
+      text: `Majority traffic is Desktop (${Math.round(desktopCount/total*100)}%). Optimize layout for larger screens and consider hover interactions.` })
 
   // Bounce rate
-  const bounced   = sessions.filter(s => { const sm = summaryMap[s.id]; return !sm || Number(sm.click_count) === 0 }).length
-  const bounceRate= Math.round(bounced / total * 100)
+  const bounced    = sessions.filter(s => { const sm = summaryMap[s.id]; return !sm || Number(sm.click_count) === 0 }).length
+  const bounceRate = Math.round(bounced / total * 100)
   if (bounceRate >= 65)
     ins.push({ type: 'warning', icon: '↩️',
       text: `Bounce rate is ${bounceRate}% — very high. Users are leaving without clicking anything. Review your landing page hook.` })
@@ -272,16 +301,59 @@ export function generateInsights({ sessions, summaryMap, clicks, pageStats }) {
         text: `Strong avg. time on page (${avgS}s). Users are reading your content thoroughly.` })
   }
 
-  // Top CTA
+  // Peak hour insight
+  const hourSessions = Array(24).fill(0)
+  sessions.forEach(s => {
+    const h = new Date(s.started_at_ist).getHours()
+    if (h >= 0 && h < 24) hourSessions[h]++
+  })
+  const peakHour = hourSessions.indexOf(Math.max(...hourSessions))
+  const peakCount = hourSessions[peakHour]
+  if (peakCount > 0) {
+    const label = peakHour === 0 ? '12am' : peakHour < 12 ? `${peakHour}am` : peakHour === 12 ? '12pm' : `${peakHour - 12}pm`
+    ins.push({ type: 'tip', icon: '⏰',
+      text: `Peak traffic hour is ${label} with ${peakCount} session${peakCount > 1 ? 's' : ''}. Schedule campaigns and posts to go live 30 min before.` })
+  }
+
+  // Evening vs daytime split
+  const eveningSessions = hourSessions.slice(18, 24).reduce((a, b) => a + b, 0)
+  const daySessions     = hourSessions.slice(9, 18).reduce((a, b) => a + b, 0)
+  const eveningPct = total ? Math.round(eveningSessions / total * 100) : 0
+  if (eveningPct >= 40)
+    ins.push({ type: 'info', icon: '🌙',
+      text: `${eveningPct}% of sessions happen in the evening (6pm–12am). Evening is prime time — boost your ad spend after 6pm.` })
+  else if (daySessions > eveningSessions)
+    ins.push({ type: 'info', icon: '☀️',
+      text: `Most sessions happen during daytime (9am–6pm). Publish content and run promotions in business hours for max reach.` })
+
+  // Top CTA — cleaned platform name
   const ctaMap = {}
   clicks.filter(c => isCTA(c.target_text || '')).forEach(c => {
-    const t = c.target_text?.trim()
-    if (t) ctaMap[t] = (ctaMap[t] || 0) + 1
+    const raw = c.target_text?.trim()
+    if (!raw) return
+    // Strip "BUY NOW" and get platform
+    const cleaned = raw.replace(/buy now/gi, '').replace(/buy/gi, '').replace(/\s+/g, ' ').trim()
+    if (cleaned && cleaned.length < 30) ctaMap[cleaned] = (ctaMap[cleaned] || 0) + 1
   })
   const topCTA = Object.entries(ctaMap).sort((a, b) => b[1] - a[1])[0]
   if (topCTA)
     ins.push({ type: 'tip', icon: '🎯',
-      text: `Top CTA: "${topCTA[0]}" clicked ${topCTA[1]} time${topCTA[1] > 1 ? 's' : ''}. Prioritise its visibility and A/B test copy.` })
+      text: `Top platform CTA: "${topCTA[0]}" clicked ${topCTA[1]} time${topCTA[1] > 1 ? 's' : ''}. Prioritise its placement and A/B test button copy.` })
+
+  // Platform preference
+  const platformMap = {}
+  clicks.filter(c => isCTA(c.target_text || '')).forEach(c => {
+    const raw = c.target_text?.trim() || ''
+    const cleaned = raw.replace(/buy now/gi, '').replace(/buy/gi, '').replace(/\s+/g, ' ').trim()
+    if (cleaned && cleaned.length < 30) platformMap[cleaned] = (platformMap[cleaned] || 0) + 1
+  })
+  const sortedPlatforms = Object.entries(platformMap).sort((a, b) => b[1] - a[1])
+  if (sortedPlatforms.length >= 2) {
+    const top = sortedPlatforms[0]
+    const second = sortedPlatforms[1]
+    ins.push({ type: 'success', icon: '🛒',
+      text: `${top[0]} is your top purchase platform (${top[1]} clicks), followed by ${second[0]} (${second[1]} clicks). Prioritize product listing on ${top[0]}.` })
+  }
 
   // Low-engagement page
   const lowPage = pageStats
@@ -299,11 +371,29 @@ export function generateInsights({ sessions, summaryMap, clicks, pageStats }) {
     ins.push({ type: 'success', icon: '🔥',
       text: `"${bestPage.page}" has avg. scroll depth of ${bestPage.avgScroll}% — your best-performing page. Model other pages after it.` })
 
+  // Traffic source insight
+  const sourceMap = {}
+  sessions.forEach(s => { const r = parseReferrer(s.referrer); sourceMap[r] = (sourceMap[r] || 0) + 1 })
+  const topSource = Object.entries(sourceMap).sort((a, b) => b[1] - a[1])[0]
+  if (topSource && topSource[0] !== 'Direct')
+    ins.push({ type: 'info', icon: '🌐',
+      text: `Top traffic source is ${topSource[0]} (${topSource[1]} sessions). Strengthen this channel — it's bringing the most visitors.` })
+  else if (topSource && topSource[0] === 'Direct')
+    ins.push({ type: 'success', icon: '🔗',
+      text: `Most traffic is Direct (${topSource[1]} sessions) — strong brand recall. Consider adding UTM links to identify organic channels better.` })
+
   // Bot traffic
   const botCount = sessions.filter(s => parseDevice(s.user_agent) === 'Bot').length
   if (botCount > total * 0.15)
     ins.push({ type: 'warning', icon: '🤖',
       text: `${Math.round(botCount/total*100)}% of sessions are bots/crawlers (${botCount} sessions). Filter these from paid reports.` })
+
+  // High engagement rate
+  const highEngCount = summaries.filter(s => Number(s.max_scroll_depth) > 0.7 && Number(s.time_on_page_ms) > 30000).length
+  const highEngPct   = total ? Math.round(highEngCount / total * 100) : 0
+  if (highEngPct >= 30)
+    ins.push({ type: 'success', icon: '🔥',
+      text: `${highEngPct}% of sessions are highly engaged (scroll>70% & 30s+). Your content is resonating well — keep the current format.` })
 
   return ins
 }

@@ -28,7 +28,7 @@ import {
   C, GLOBAL_CSS, CHART_COLORS, CustomTooltip,
   parseDevice, parseDeviceIcon, parseReferrer,
   engagementLevel, engagementStyle, isCTA,
-  filterByDays, buildPageStats, buildClickStats, generateInsights,
+  filterByDays, buildPageStats, buildClickStats, buildHourlyStats, generateInsights,
   Card, CardHeader, KPICard, InsightPill,
   SkeletonCard, paginBtnStyle,
 } from './analyticsUtils'
@@ -44,6 +44,7 @@ const TABS = [
   { id: 'clicks',     label: '🖱️ Clicks'      },
   { id: 'engagement', label: '🔥 Engagement'  },
   { id: 'traffic',    label: '🌐 Traffic'     },
+  { id: 'hours',      label: '⏰ Peak Hours'  },
   { id: 'sessions',   label: '📋 Sessions'    },
 ]
 
@@ -220,7 +221,7 @@ export default function Analytics() {
   const engagementRate = totalSessions ? Math.round(engagedCount / totalSessions * 100) : 0
   const ctaCount       = clicks.filter(c => isCTA(c.target_text || '')).length
 
-  // Engagement distribution
+  // Engagement distribution   
   const engDist = useMemo(() => {
     const dist = { High: 0, Medium: 0, Low: 0, None: 0 }
     sessions.forEach(s => { dist[engagementLevel(summaryMap[s.id])]++ })
@@ -252,6 +253,13 @@ export default function Analytics() {
     return Object.entries(m).sort((a,b)=>a[0].localeCompare(b[0]))
       .map(([date,visitors]) => ({ date: date.slice(5), visitors }))
   }, [sessions])
+
+  // Hourly data
+  const hourlyData = useMemo(() => buildHourlyStats(sessions, clicks), [sessions, clicks])
+  const peakHour   = useMemo(() => {
+    const max = Math.max(...hourlyData.map(h => h.sessions))
+    return hourlyData.find(h => h.sessions === max)
+  }, [hourlyData])
 
   // Unique sources for filter
   const allSources = useMemo(() => {
@@ -304,7 +312,6 @@ export default function Analytics() {
       </div>
     </div>
   )
-
   // ══════════════════════════════════════════════════════
   return (
     <div style={{ minHeight: '100vh', background: C.gray50 }}>
@@ -632,28 +639,36 @@ export default function Analytics() {
               </Card>
             </div>
 
-            {/* CTA Clicks panel */}
-            {clickStats.ctaClicks.length > 0 && (
-              <Card style={{ marginTop: '1rem', borderLeft: `3px solid ${C.emerald}` }}>
-                <CardHeader
-                  title="🎯 CTA Click Details"
-                  sub={`${clickStats.ctaClicks.length} high-intent interactions — buy, signup, download, subscribe…`}
-                  badge={`${clickStats.ctaClicks.length} CTA clicks`}
-                  badgeColor={C.emerald} badgeBg={C.emeraldL}
-                />
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px,1fr))', gap: 8 }}>
-                  {Object.entries(
-                    clickStats.ctaClicks.reduce((m, c) => {
-                      const k = c.target_text?.trim() || 'Unknown'
-                      m[k] = (m[k] || 0) + 1
-                      return m
-                    }, {})
-                  ).sort((a,b) => b[1]-a[1]).map(([name, count]) => (
-                    <TagBadge key={name} name={name} value={count} color={C.emerald} bg={C.emeraldL} />
-                  ))}
-                </div>
-              </Card>
-            )}
+            {/* CTA Clicks panel — cleaned: only platform names, no "BUY NOW", no long text */}
+            {clickStats.ctaClicks.length > 0 && (() => {
+              const PLATFORM_LIST_ANAL = ['Amazon','Flipkart','Blinkit','Zepto','Instamart','Aromahpure','Vercel']
+              const platformMap = {}
+              clickStats.ctaClicks.forEach(c => {
+                const raw = c.target_text?.trim() || ''
+                const cleaned = raw.replace(/buy now/gi,'').replace(/buy/gi,'').replace(/\s+/g,' ').trim()
+                if (!cleaned || cleaned.length > 30) return
+                const match = PLATFORM_LIST_ANAL.find(p => cleaned.toLowerCase().includes(p.toLowerCase()))
+                if (!match) return
+                platformMap[match] = (platformMap[match] || 0) + 1
+              })
+              const platformEntries = Object.entries(platformMap).sort((a,b) => b[1]-a[1])
+              if (platformEntries.length === 0) return null
+              return (
+                <Card style={{ marginTop: '1rem', borderLeft: `3px solid ${C.emerald}` }}>
+                  <CardHeader
+                    title="🎯 CTA Click Details"
+                    sub={`${clickStats.ctaClicks.length} high-intent interactions — buy, signup, download, subscribe…`}
+                    badge={`${clickStats.ctaClicks.length} CTA clicks`}
+                    badgeColor={C.emerald} badgeBg={C.emeraldL}
+                  />
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px,1fr))', gap: 8 }}>
+                    {platformEntries.map(([name, count]) => (
+                      <TagBadge key={name} name={name} value={count} color={C.emerald} bg={C.emeraldL} />
+                    ))}
+                  </div>
+                </Card>
+              )
+            })()}
           </div>
         )}
 
@@ -821,7 +836,129 @@ export default function Analytics() {
         )}
 
         {/* ══════════════════════════════════════════════
-            TAB 5 — SMART SESSIONS TABLE
+            TAB 5 — PEAK HOURS
+        ══════════════════════════════════════════════ */}
+        {activeTab === 'hours' && (
+          <div style={{ animation: 'fadeUp 0.25s ease' }}>
+            <SectionHeading sub="Hourly session and click distribution — all times in IST">
+              Peak Hours Analysis
+            </SectionHeading>
+
+            {/* Hourly bar chart */}
+            <Card style={{ marginBottom: '1rem' }}>
+              <CardHeader
+                title="Sessions by Hour"
+                sub="Which hours drive the most traffic"
+                badge={peakHour ? `Peak: ${peakHour.label} (${peakHour.sessions} sessions)` : undefined}
+                badgeColor={C.amber} badgeBg={C.amberL}
+              />
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={hourlyData} barSize={18} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: C.gray400, fontSize: 10, fontFamily: 'DM Mono, monospace' }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="sessions" name="Sessions" radius={[4,4,0,0]}>
+                    {hourlyData.map((entry, i) => (
+                      <Cell key={i} fill={entry.hour === peakHour?.hour ? C.amber : C.indigo + 'BB'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+
+            {/* Clicks by hour */}
+            <Card style={{ marginBottom: '1rem' }}>
+              <CardHeader title="Clicks by Hour" sub="High-intent interactions per hour" />
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={hourlyData} barSize={16} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.gray100} vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: C.gray400, fontSize: 10, fontFamily: 'DM Mono, monospace' }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: C.gray400, fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="clicks" name="Clicks" fill={C.emerald} radius={[4,4,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+
+            {/* Day part breakdown */}
+            <Card>
+              <CardHeader title="Day Part Summary" sub="Morning / Afternoon / Evening / Night split" />
+              {(() => {
+                const morning   = hourlyData.slice(5,12).reduce((a,b)=>a+b.sessions,0)
+                const afternoon = hourlyData.slice(12,17).reduce((a,b)=>a+b.sessions,0)
+                const evening   = hourlyData.slice(17,21).reduce((a,b)=>a+b.sessions,0)
+                const night     = hourlyData.slice(21,24).reduce((a,b)=>a+b.sessions,0) + hourlyData.slice(0,5).reduce((a,b)=>a+b.sessions,0)
+                const parts = [
+                  { label: '🌅 Morning',   sub: '5am–12pm', value: morning,   color: C.amber   },
+                  { label: '☀️ Afternoon', sub: '12pm–5pm', value: afternoon, color: C.orange  },
+                  { label: '🌆 Evening',   sub: '5pm–9pm',  value: evening,   color: C.indigo  },
+                  { label: '🌙 Night',     sub: '9pm–5am',  value: night,     color: C.violet  },
+                ]
+                const total = parts.reduce((a,p) => a+p.value, 0) || 1
+                const maxPart = Math.max(...parts.map(p=>p.value))
+                return (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
+                      {parts.map(p => (
+                        <div key={p.label} style={{
+                          background: p.value === maxPart ? p.color+'14' : C.gray50,
+                          border: `1px solid ${p.value === maxPart ? p.color+'44' : C.border}`,
+                          borderRadius: 12, padding: '1rem', textAlign: 'center',
+                        }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: C.gray600, marginBottom: 6 }}>{p.label}</div>
+                          <div style={{ fontSize: '1.6rem', fontWeight: 700, color: p.value === maxPart ? p.color : C.gray700 }}>{p.value}</div>
+                          <div style={{ fontSize: 10, color: C.gray400, marginTop: 3 }}>{p.sub}</div>
+                          <div style={{ fontSize: 10, color: p.color, fontWeight: 600, marginTop: 3 }}>
+                            {Math.round(p.value/total*100)}%
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Top 5 hours table */}
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${C.gray100}` }}>
+                            {['Rank','Hour','Sessions','Clicks','Sessions %'].map(h => (
+                              <th key={h} style={{ color: C.gray400, fontSize: '0.66rem', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.45rem 0.75rem', textAlign: 'left', fontWeight: 600 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...hourlyData].sort((a,b)=>b.sessions-a.sessions).slice(0,10).map((h,i) => (
+                            <tr key={h.hour} style={{ borderBottom: `1px solid ${C.gray100}` }}
+                              onMouseEnter={e=>e.currentTarget.style.background=C.gray50}
+                              onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+                            >
+                              <td style={{ padding: '0.6rem 0.75rem' }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: i===0?C.amber:C.gray400, background: i===0?C.amberL:C.gray100, padding:'2px 8px', borderRadius:20 }}>#{i+1}</span>
+                              </td>
+                              <td style={{ padding: '0.6rem 0.75rem', fontFamily: 'DM Mono, monospace', fontSize: 13, color: C.gray700, fontWeight: 600 }}>{h.label}</td>
+                              <td style={{ padding: '0.6rem 0.75rem', fontSize: 13, fontWeight: 600, color: C.indigo }}>{h.sessions}</td>
+                              <td style={{ padding: '0.6rem 0.75rem', fontSize: 13, fontWeight: 600, color: C.emerald }}>{h.clicks}</td>
+                              <td style={{ padding: '0.6rem 0.75rem' }}>
+                                <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                  <div style={{ width:80, height:5, background:C.gray100, borderRadius:3 }}>
+                                    <div style={{ width:`${Math.round(h.sessions/total*100)}%`, height:5, background:C.indigo, borderRadius:3 }} />
+                                  </div>
+                                  <span style={{ fontSize:11, color:C.gray500 }}>{Math.round(h.sessions/total*100)}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )
+              })()}
+            </Card>
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════
+            TAB 6 — SMART SESSIONS TABLE
         ══════════════════════════════════════════════ */}
         {activeTab === 'sessions' && (
           <div style={{ animation: 'fadeUp 0.25s ease' }}>

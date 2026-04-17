@@ -109,3 +109,35 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+
+.ranked-item {
+  margin-bottom: 4px;   /* pehle zyada tha */
+}
+
+.ranked-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;   /* reduce spacing */
+}
+
+.ranked-name {
+  font-size: 11px;      /* smaller text */
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranked-count {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ranked-bar-bg {
+  height: 4px;          /* bar height kam */
+}
+
+.ranked-bar {
+  height: 4px;
+}
